@@ -475,7 +475,7 @@ def main():
             out_prefix,
             args.min_devnum,
             hid_only=args.hid_only,
-            write_pcap=args.pcap,
+            write_pcap=args.write_pcap,
         )
     finally:
         try:

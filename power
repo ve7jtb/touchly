@@ -1,13 +1,24 @@
 #!/bin/sh
 # The Pi 3B+ switches the four external USB sockets as one group.
-# Ensure GPIO21 is in High-Z input (PUD_OFF) before powering on/cycling so
-# the YubiKey capacitive touch sensor calibrates an untouched baseline.
+# Route off/on/cycle through touch.py so every USB hub power change acquires the
+# single system-wide Touchly lock and releases the touch GPIO to High-Z (PUD_OFF)
+# before switching VBUS. Extra flags (e.g. `--pin 17`) are forwarded to touch.py.
 set -eu
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-case "${1:-}" in
-    status) exec sudo /usr/sbin/uhubctl -l 1-1 ;;
-    off) exec sudo /usr/sbin/uhubctl -l 1-1 -p 2 -a off ;;
-    on) exec "$DIR/touch.py" usb-on ;;
-    cycle) exec "$DIR/touch.py" usb-cycle ;;
-    *) echo "Usage: $0 {status|on|off|cycle}" >&2; exit 2 ;;
+ACTION=${1:-}
+if [ $# -gt 0 ]; then
+    shift
+fi
+case "$ACTION" in
+    status)
+        if [ $# -ne 0 ]; then
+            echo "Usage: $0 status" >&2
+            exit 2
+        fi
+        exec sudo /usr/sbin/uhubctl -l 1-1
+        ;;
+    off) exec "$DIR/touch.py" usb-off "$@" ;;
+    on) exec "$DIR/touch.py" usb-on "$@" ;;
+    cycle) exec "$DIR/touch.py" usb-cycle "$@" ;;
+    *) echo "Usage: $0 {status|on|off|cycle} [touch.py options]" >&2; exit 2 ;;
 esac

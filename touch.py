@@ -27,6 +27,7 @@ import RPi.GPIO as G
 # Local UNIX datagram socket receiving UP_SATISFIED events from pi_usbmon_capture.py
 UP_SOCK_PATH = '/tmp/yubikey_up.sock'
 PEER_CREDENTIALS = struct.Struct('iII')
+GPIO_MEM_PATH = '/dev/gpiomem'
 SO_PATH = Path(__file__).resolve().with_name('libyk_chirp.so')
 C_PATH = Path(__file__).resolve().with_name('libyk_chirp.c')
 MIN_RELEASE_GAP_SEC = 0.25
@@ -1846,8 +1847,18 @@ def parse_args():
         'action',
         nargs='?',
         default='touch',
-        choices=('touch', 'press', 'release', 'repeat', 'daemon', 'status', 'usb-on', 'usb-cycle'),
-        help='touch action to run (default: touch)',
+        choices=(
+            'touch',
+            'press',
+            'release',
+            'repeat',
+            'daemon',
+            'status',
+            'usb-off',
+            'usb-on',
+            'usb-cycle',
+        ),
+        help='touch or USB hub power action to run (default: touch)',
     )
     parser.add_argument(
         '--pin',
@@ -1878,15 +1889,45 @@ def parse_args():
     return parser.parse_args()
 
 
+def acquire_touchly_lock():
+    """Acquire a single non-blocking, system-wide lock for all Touchly GPIO and USB power actions.
+
+    Returns the open /dev/gpiomem file descriptor, which the caller must keep open
+    for the lifetime of the touch session or USB hub power operation.
+    """
+    # Use one whole-device `flock` on `/dev/gpiomem` (`root:gpio 0660`) across all pins
+    # and all USB hub power commands (`usb-off`, `usb-on`, `usb-cycle`):
+    #   1. Because `uhubctl -l 1-1 -p 2` switches all four external USB ports together,
+    #      a single lock prevents cycling or cutting USB power while another Touchly
+    #      process is driving *any* `--pin`, regardless of UID (`jbradley` vs. `sudo`)
+    #      or environment (`XDG_RUNTIME_DIR`).
+    #   2. Only `root` and `gpio`-group members can open `/dev/gpiomem`, avoiding sticky
+    #      directory `fs.protected_regular=2` cross-UID errors and unprivileged lock squatting.
+    #   3. `flock` is bound to `lock_fd`'s open file description, so `libyk_chirp`'s
+    #      `yk_init()` opening and closing its own `/dev/gpiomem` fd does not drop the lock,
+    #      and `O_CLOEXEC` avoids leaking `/dev/gpiomem` into the `sudo uhubctl` child.
+    try:
+        lock_fd = os.open(GPIO_MEM_PATH, os.O_RDWR | os.O_CLOEXEC)
+    except OSError as exc:
+        sys.exit(f'Cannot open {GPIO_MEM_PATH} to acquire Touchly hardware lock: {exc}')
+
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock_fd)
+        sys.exit('Touchly GPIO/USB hardware is busy. Stop the active touch session or daemon first.')
+    except BaseException:
+        os.close(lock_fd)
+        raise
+    return lock_fd
+
+
 def main():
     args = parse_args()
 
-    runtime_dir = Path(os.environ.get('XDG_RUNTIME_DIR', '/tmp'))
-    lock_file = (runtime_dir / f'yubikey-touch-gpio{args.pin}.lock').open('w')
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        sys.exit(f'BCM GPIO{args.pin} is busy. Stop the touch session or daemon first.')
+    # Keep `lock_fd` bound in `main()`'s frame so the single Touchly lock remains held
+    # until the process exits (including across `subprocess.run(...)` in `usb-*` actions).
+    lock_fd = acquire_touchly_lock()
 
     G.setwarnings(False)
     G.setmode(G.BCM)
@@ -1910,16 +1951,20 @@ def main():
             release_pin(args.pin)
         return
 
-    if args.action in ('release', 'usb-on', 'usb-cycle'):
+    if args.action in ('release', 'usb-off', 'usb-on', 'usb-cycle'):
+        # Drive the configured touch pin to High-Z before switching USB VBUS off/on/cycle
+        # so an unpowered key is never back-driven and power-up sees an untouched baseline.
         release_pin(args.pin, strict=True)
         if args.action == 'release':
             return
         command = ['sudo', '/usr/sbin/uhubctl', '-l', '1-1', '-p', '2']
-        if args.action == 'usb-on':
+        if args.action == 'usb-off':
+            command += ['-a', 'off']
+        elif args.action == 'usb-on':
             command += ['-a', 'on']
         else:
             command += ['-a', 'cycle', '-d', '2']
-        # Keep the GPIO lock while power is restored and the key starts up.
+        # Keep the Touchly lock while USB power switches and the key starts up.
         sys.exit(subprocess.run(command).returncode)
 
     if args.action == 'press':

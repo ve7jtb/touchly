@@ -183,9 +183,10 @@ USB POWER (RASPBERRY PI 3B+)
 
 The power script uses sudo and uhubctl to switch all four external USB
 sockets together. Stop the touch daemon or repeat mode before running
-on or cycle. These commands require GPIO release and hold the pin lock
-while restoring power so the YubiKey can establish an untouched
-baseline. Unmount USB storage before switching it off.
+off, on, or cycle. These commands release the configured GPIO pin and
+hold the shared Touchly lock while switching power. If you use a custom
+pin, pass the same setting to the power command (for example,
+./power cycle --pin 17). Unmount USB storage before switching it off.
 
 USB CAPTURE AND FORWARDING
 
