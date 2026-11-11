@@ -18,6 +18,7 @@ import signal
 import socket
 import struct
 import sys
+import tempfile
 import time
 
 # Linux /dev/usbmonN ioctl constants (drivers/usb/mon/mon_bin.c)
@@ -127,11 +128,14 @@ def decode_ctaphid_summary(ep_num: int, is_in: bool, data: bytes) -> str:
         return f"CTAPHID_CONT {direction} cid={cid} seq={cmd_or_seq}"
 
 
+def open_new_file(path, flags):
+    return os.open(path, flags | os.O_NOFOLLOW, 0o600)
+
+
 def run_capture(
     bus: int,
     out_prefix: str,
     min_devnum: int,
-    pidfile: str | None,
     hid_only: bool = True,
     write_pcap: bool = False,
 ):
@@ -143,10 +147,6 @@ def run_capture(
         fcntl.ioctl(fd, MON_IOCT_RING_SIZE, 1024 * 1024)
     except OSError:
         pass
-
-    if pidfile:
-        with open(pidfile, "w", encoding="utf-8") as pf:
-            pf.write(str(os.getpid()))
 
     pcap_path = f"{out_prefix}.pcap"
     csv_path = f"{out_prefix}.csv"
@@ -187,9 +187,9 @@ def run_capture(
     up_pending_by_chan: dict[tuple[int, bytes], tuple[int, int, int]] = {}
     usb_identity_cache: dict[tuple[int, int], str] = {}
 
-    pcap_f = open(pcap_path, "wb") if write_pcap else None
+    pcap_f = open(pcap_path, "xb", opener=open_new_file) if write_pcap else None
     try:
-        with open(csv_path, "w", newline="", encoding="utf-8") as csv_f:
+        with open(csv_path, "x", newline="", encoding="utf-8", opener=open_new_file) as csv_f:
             if pcap_f is not None:
                 # Write standard libpcap global header (microsecond resolution, DLT_USB_LINUX_MMAPPED=220)
                 pcap_f.write(PCAP_GLOBAL_HDR.pack(0xA1B2C3D4, 2, 4, 0, 0, 65535, DLT_USB_LINUX_MMAPPED))
@@ -414,11 +414,6 @@ def run_capture(
             pass
 
     os.close(fd)
-    if pidfile and os.path.exists(pidfile):
-        try:
-            os.unlink(pidfile)
-        except OSError:
-            pass
 
 
 def daemonize(logfile: str = "/run/pi_usbmon_capture.log"):
@@ -437,7 +432,7 @@ def daemonize(logfile: str = "/run/pi_usbmon_capture.log"):
     except OSError:
         pass
     devnull_fd = os.open(os.devnull, os.O_RDONLY)
-    log_fd = os.open(logfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    log_fd = os.open(logfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     os.dup2(devnull_fd, 0)
     os.dup2(log_fd, 1)
     os.dup2(log_fd, 2)
@@ -450,9 +445,9 @@ def daemonize(logfile: str = "/run/pi_usbmon_capture.log"):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bus", type=int, default=1, help="USB bus number (default: 1)")
-    parser.add_argument("-o", "--output-prefix", default="/tmp/usbmon_yubikey", help="Output file prefix (.pcap and .csv)")
+    parser.add_argument("-o", "--output-prefix", help="Output file prefix (default: usbmon_yubikey in a new private directory)")
     parser.add_argument("--min-devnum", type=int, default=5, help="Minimum USB device number to capture (default: 5, skipping root hub & onboard hubs/eth0)")
-    parser.add_argument("--pidfile", default="/tmp/pi_usbmon_capture.pid", help="PID file path")
+    parser.add_argument("--pidfile", help="PID file path (default: pi_usbmon_capture.pid in a new private directory)")
     parser.add_argument("-d", "--daemon", action="store_true", help="Detach and run in background")
     parser.add_argument("--hid-only", dest="hid_only", action="store_true", default=True, help="Capture only 64-byte USB Interrupt (HID) report payloads (default: True)")
     parser.add_argument("--all-usb", dest="hid_only", action="store_false", help="Capture all USB transfers (CTRL, BULK, INTR) instead of HID-only")
@@ -461,14 +456,32 @@ def main():
     args = parser.parse_args()
     if args.daemon:
         daemonize()
-    run_capture(
-        args.bus,
-        args.output_prefix,
-        args.min_devnum,
-        args.pidfile,
-        hid_only=args.hid_only,
-        write_pcap=args.write_pcap,
-    )
+    private_dir = None
+    if args.output_prefix is None or args.pidfile is None:
+        private_dir = tempfile.mkdtemp(prefix="touchly-", dir="/tmp")
+    out_prefix = args.output_prefix
+    if out_prefix is None:
+        out_prefix = os.path.join(private_dir, "usbmon_yubikey")
+    pidfile = args.pidfile
+    if pidfile is None:
+        pidfile = os.path.join(private_dir, "pi_usbmon_capture.pid")
+
+    with open(pidfile, "x", encoding="utf-8", opener=open_new_file) as pf:
+        pf.write(str(os.getpid()))
+    print(f"Capture output prefix: {out_prefix}", file=sys.stderr, flush=True)
+    try:
+        run_capture(
+            args.bus,
+            out_prefix,
+            args.min_devnum,
+            hid_only=args.hid_only,
+            write_pcap=args.pcap,
+        )
+    finally:
+        try:
+            os.unlink(pidfile)
+        except FileNotFoundError:
+            pass
 
 
 if __name__ == "__main__":

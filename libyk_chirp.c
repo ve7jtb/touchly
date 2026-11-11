@@ -60,6 +60,7 @@ int yk_init(void) {
 }
 
 void yk_release(int pin) {
+    if (pin < 0 || pin > 31) return;
     if (yk_init() < 0) return;
     uint32_t shift = (uint32_t)((pin % 10) * 3);
     uint32_t reg = (uint32_t)(pin / 10);
@@ -102,9 +103,11 @@ static inline void set_out(int pin) {
  *     1 if interrupted by a validated `yk_cancel()` signal,
  *     2 if stopped by the monotonic session deadline (`rem_deadline_ms`),
  *     0 if the sweep completed within `deadline_ns`,
- *    -1 on `/dev/gpiomem` init error.
+ *    -1 on `/dev/gpiomem` init error,
+ *    -2 for a pin outside GPIO bank 0.
  */
 int yk_chirp_once(int pin, int duration_ms, int rem_deadline_ms, int band) {
+    if (pin < 0 || pin > 31) return -2;
     if (yk_init() < 0) return -1;
     if (duration_ms <= 0) duration_ms = 1700;
     if (rem_deadline_ms <= 0) rem_deadline_ms = duration_ms;

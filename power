@@ -7,13 +7,7 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 case "${1:-}" in
     status) exec sudo /usr/sbin/uhubctl -l 1-1 ;;
     off) exec sudo /usr/sbin/uhubctl -l 1-1 -p 2 -a off ;;
-    on)
-        "$DIR/touch.py" release || true
-        exec sudo /usr/sbin/uhubctl -l 1-1 -p 2 -a on
-        ;;
-    cycle)
-        "$DIR/touch.py" release || true
-        exec sudo /usr/sbin/uhubctl -l 1-1 -p 2 -a cycle -d 2
-        ;;
+    on) exec "$DIR/touch.py" usb-on ;;
+    cycle) exec "$DIR/touch.py" usb-cycle ;;
     *) echo "Usage: $0 {status|on|off|cycle}" >&2; exit 2 ;;
 esac

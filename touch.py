@@ -16,6 +16,7 @@ from pathlib import Path
 import select
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -25,6 +26,7 @@ import RPi.GPIO as G
 
 # Local UNIX datagram socket receiving UP_SATISFIED events from pi_usbmon_capture.py
 UP_SOCK_PATH = '/tmp/yubikey_up.sock'
+PEER_CREDENTIALS = struct.Struct('iII')
 SO_PATH = Path(__file__).resolve().with_name('libyk_chirp.so')
 C_PATH = Path(__file__).resolve().with_name('libyk_chirp.c')
 MIN_RELEASE_GAP_SEC = 0.25
@@ -91,6 +93,7 @@ int yk_init(void) {
 }
 
 void yk_release(int pin) {
+    if (pin < 0 || pin > 31) return;
     if (yk_init() < 0) return;
     uint32_t shift = (uint32_t)((pin % 10) * 3);
     uint32_t reg = (uint32_t)(pin / 10);
@@ -133,9 +136,11 @@ static inline void set_out(int pin) {
  *     1 if interrupted by a validated `yk_cancel()` signal,
  *     2 if stopped by the monotonic session deadline (`rem_deadline_ms`),
  *     0 if the sweep completed within `deadline_ns`,
- *    -1 on `/dev/gpiomem` init error.
+ *    -1 on `/dev/gpiomem` init error,
+ *    -2 for a pin outside GPIO bank 0.
  */
 int yk_chirp_once(int pin, int duration_ms, int rem_deadline_ms, int band) {
+    if (pin < 0 || pin > 31) return -2;
     if (yk_init() < 0) return -1;
     if (duration_ms <= 0) duration_ms = 1700;
     if (rem_deadline_ms <= 0) rem_deadline_ms = duration_ms;
@@ -371,29 +376,35 @@ def positive(value):
     return number
 
 
-def release_pin(pin):
+def release_pin(pin, *, strict=False):
     lib = get_chirp_lib(allow_init=False)
     if lib is not None:
         lib.yk_release(pin)
     try:
         G.setup(pin, G.IN, pull_up_down=G.PUD_OFF)
     except Exception:
-        pass
+        if strict:
+            raise
 
 
 def open_up_socket():
     """Bind a non-blocking UNIX datagram socket at UP_SOCK_PATH to receive UP_SATISFIED events."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    sock.setblocking(False)
     try:
-        os.unlink(UP_SOCK_PATH)
-    except OSError:
-        pass
-    sock.bind(UP_SOCK_PATH)
-    try:
-        os.chmod(UP_SOCK_PATH, 0o666)
-    except OSError:
-        pass
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        sock.setblocking(False)
+        try:
+            os.unlink(UP_SOCK_PATH)
+        except FileNotFoundError:
+            pass
+        previous_umask = os.umask(0o177)
+        try:
+            sock.bind(UP_SOCK_PATH)
+        finally:
+            os.umask(previous_umask)
+    except BaseException:
+        sock.close()
+        raise
     return sock
 
 
@@ -706,12 +717,22 @@ def drain_up_socket(sock, active_identity=None, state=None):
     matched_reason = None
     while True:
         try:
-            data = sock.recv(512)
+            data, ancillary, flags, _ = sock.recvmsg(
+                512, socket.CMSG_SPACE(PEER_CREDENTIALS.size)
+            )
             sock_rx_ns = time.monotonic_ns()
         except (BlockingIOError, InterruptedError, OSError):
             break
-        if not data:
-            break
+        if not data or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+            continue
+        if not any(
+            level == socket.SOL_SOCKET
+            and kind == socket.SCM_CREDENTIALS
+            and len(credentials) == PEER_CREDENTIALS.size
+            and PEER_CREDENTIALS.unpack(credentials)[1] in (0, os.geteuid())
+            for level, kind, credentials in ancillary
+        ):
+            continue
         ev = parse_up_event(data)
         if ev is None:
             continue
@@ -1812,25 +1833,32 @@ def run_daemon(pin, hold, interval, default_max_duration):
             drain_commands(min(0.02, left))
 
 
+def gpio_pin(value):
+    pin = int(value)
+    if not 0 <= pin <= 31:
+        raise argparse.ArgumentTypeError('must be a BCM GPIO number from 0 to 31')
+    return pin
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         'action',
         nargs='?',
         default='touch',
-        choices=('touch', 'press', 'release', 'repeat', 'daemon', 'status'),
+        choices=('touch', 'press', 'release', 'repeat', 'daemon', 'status', 'usb-on', 'usb-cycle'),
         help='touch action to run (default: touch)',
     )
     parser.add_argument(
         '--pin',
-        type=int,
-        default=int(os.environ.get('YUBIKEY_TOUCH_PIN', '21')),
+        type=gpio_pin,
+        default=os.environ.get('YUBIKEY_TOUCH_PIN', '21'),
         help='BCM GPIO pin wired to the YubiKey touch contact (default: 21)',
     )
     parser.add_argument(
         '--hold',
         type=positive,
-        default=float(os.environ.get('YUBIKEY_TOUCH_HOLD', '1.70')),
+        default=os.environ.get('YUBIKEY_TOUCH_HOLD', '1.70'),
         help='seconds to hold a single 136-step chirp (default: 1.70)',
     )
     parser.add_argument(
@@ -1838,13 +1866,13 @@ def parse_args():
         '--release-interval',
         dest='interval',
         type=positive,
-        default=float(os.environ.get('YUBIKEY_TOUCH_INTERVAL', '0.45')),
+        default=os.environ.get('YUBIKEY_TOUCH_INTERVAL', '0.45'),
         help='High-Z release interval (s) between chirps, or full cycle period if > --hold (default: 0.45)',
     )
     parser.add_argument(
         '--max-duration',
         type=positive,
-        default=float(os.environ.get('YUBIKEY_TOUCH_MAX_DURATION', '25.0')),
+        default=os.environ.get('YUBIKEY_TOUCH_MAX_DURATION', '25.0'),
         help='shared wall-clock deadline (s) for repeat/daemon session (default: 25.0)',
     )
     return parser.parse_args()
@@ -1858,7 +1886,7 @@ def main():
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        sys.exit(0)
+        sys.exit(f'BCM GPIO{args.pin} is busy. Stop the touch session or daemon first.')
 
     G.setwarnings(False)
     G.setmode(G.BCM)
@@ -1882,9 +1910,17 @@ def main():
             release_pin(args.pin)
         return
 
-    if args.action == 'release':
-        release_pin(args.pin)
-        return
+    if args.action in ('release', 'usb-on', 'usb-cycle'):
+        release_pin(args.pin, strict=True)
+        if args.action == 'release':
+            return
+        command = ['sudo', '/usr/sbin/uhubctl', '-l', '1-1', '-p', '2']
+        if args.action == 'usb-on':
+            command += ['-a', 'on']
+        else:
+            command += ['-a', 'cycle', '-d', '2']
+        # Keep the GPIO lock while power is restored and the key starts up.
+        sys.exit(subprocess.run(command).returncode)
 
     if args.action == 'press':
         pulse_pin(args.pin, args.hold, band=0)

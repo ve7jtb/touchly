@@ -137,13 +137,15 @@ specific request when several devices or channels are active.
 The USB monitor reads /dev/usbmon1 by default. Use --bus if the YubiKey
 is on another USB bus, and lower --min-devnum if its device number is
 below the default cutoff of 5. The default HID capture mode is enough
-for automatic touch. Use --pcap to also save a packet capture.
+for automatic touch. Use --pcap to also save a packet capture. The
+touch daemon accepts events from the same user or from root, which
+allows the USB monitor to run with sudo.
 
 TOUCH SETTINGS
 
 Command-line flags override their corresponding environment variables.
 
-  --pin           YUBIKEY_TOUCH_PIN           21 (BCM GPIO number)
+  --pin           YUBIKEY_TOUCH_PIN           21 (BCM GPIO 0–31)
   --hold          YUBIKEY_TOUCH_HOLD          1.70 seconds (sweep timing)
   --interval      YUBIKEY_TOUCH_INTERVAL      0.45 seconds
   --max-duration  YUBIKEY_TOUCH_MAX_DURATION  25 seconds
@@ -157,16 +159,18 @@ overrides that session's default touch budget.
 
 PRE-ARMING AND THE FIRST SWEEP
 
-The pre-charge step is a settling period. ARM leaves GPIO as a
-high-impedance input with its pull resistors disabled, so the Pi does
-not actively drive the touch pad while waiting. If the pin has already
-been released for at least 120 ms when the first matching presence
-request arrives, the daemon can skip the usual 120 ms pause before
-the first sweep.
+Before the first sweep, the daemon normally gives the pad 120 ms to
+settle. During this time GPIO is a high-impedance input with its pull
+resistors disabled. If ARM has already kept the pin released for at
+least 120 ms when the matching presence request arrives, the daemon
+can skip that pause.
 
-With the native GPIO backend, the first sweep runs from about 111 kHz
-down toward 2 kHz and spends extra time per step in the 5.6–2 kHz
-range. If another pass is needed, it starts higher, at about 500 kHz.
+The active pre-bias begins after that settling period, as part of the
+first native sweep. The Pi drives the pad from about 111 kHz down to
+16.7 kHz during this phase. At default timing this takes roughly 550 ms
+on the Pi 3B+ and YubiKey 6 NFC setup used to tune the waveform. The
+sweep then continues toward 2 kHz, spending extra time per step in the
+5.6–2 kHz range. Later passes start at about 500 kHz.
 The daemon reports its backend in READY. The Python GPIO fallback uses
 simpler toggling and does not reproduce the calibrated sweep.
 
@@ -178,13 +182,17 @@ USB POWER (RASPBERRY PI 3B+)
   ./power on
 
 The power script uses sudo and uhubctl to switch all four external USB
-sockets together. The on and cycle commands try to release GPIO21 before
-restoring power so the YubiKey can establish an untouched baseline.
-Stop touch repetition before cycling power, and unmount USB storage
-before switching it off.
+sockets together. Stop the touch daemon or repeat mode before running
+on or cycle. These commands require GPIO release and hold the pin lock
+while restoring power so the YubiKey can establish an untouched
+baseline. Unmount USB storage before switching it off.
 
 USB CAPTURE AND FORWARDING
 
 Use ./pi_usbmon_capture.py --help for USB capture options, including
-CSV output and optional PCAP output. See VIRTUALHERE.txt for the
-separate VirtualHere USB forwarding setup.
+CSV output and optional PCAP output. By default, each run creates a
+private directory under /tmp and prints its capture output prefix.
+For background capture, the prefix is written to /run/pi_usbmon_capture.log.
+If you specify --output-prefix or --pidfile, choose paths that do not
+already exist. See VIRTUALHERE.txt for the separate VirtualHere USB
+forwarding setup.
