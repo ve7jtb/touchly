@@ -1,57 +1,52 @@
-YubiKey touch and USB power control
+Touchly: YubiKey touch and USB power control
 
-Prepared for <pi-user> on <pi-address>, Raspberry Pi 3 Model B Plus Rev 1.4.
-OS: Trixie, 64-bit. No GPIO or USB power actions were performed during setup.
-
-Connect with: ssh <pi-user>@<pi-address>
+Touchly uses a Raspberry Pi GPIO pin to trigger the capacitive touch
+sensor on a USB-connected YubiKey. It also includes tools for capturing
+USB traffic and cycling power to the Raspberry Pi 3B+ USB ports.
 
 HARDWARE
-Build the YubiPi low-capacitance NPN transistor circuit:
-https://github.com/gierens/yubipi#hardware
-BCM GPIO21 (physical pin 40) -> 10k resistor -> transistor base
-Transistor emitter -> Pi ground; collector -> YubiKey touch pad.
-Verify the actual transistor pinout before wiring. Do not connect the pad
-directly to a GPIO voltage. A hardware base-to-emitter pull-down can keep
-the transistor off while the Pi boots or GPIO is unconfigured.
 
-TOUCH (after wiring)
-Single touch:
-  ~/touchly/touch.py once
-Repeat every second, 0.5 seconds touch / 0.5 seconds release:
-  ~/touchly/touch.py repeat
-Stop foreground repetition with Ctrl+C.
-Slower example:
-  ~/touchly/touch.py repeat --interval 3 --hold 0.5
+Plug the YubiKey into the Raspberry Pi. Connect a wire from BCM GPIO21
+(physical pin 40) directly to the YubiKey’s capacitive touch pad. Use a
+small piece of copper tape to hold the wire against the pad.
 
-The script only drives the transistor; it does not read OTPs or forward USB
-authentication to another computer. Actual touch recognition is untested.
-Timing may need adjustment for the YubiKey and application.
+During a touch, touch.py drives the pin with a frequency sweep. Between
+touches, it leaves the pin as a high-impedance input with its internal
+pull resistors disabled.
 
-OPTIONAL BACKGROUND TOUCH SERVICE (installed but NOT started or enabled)
-  systemctl --user start yubikey-touch
-  systemctl --user stop yubikey-touch
-  systemctl --user status yubikey-touch
-  journalctl --user -u yubikey-touch
-The service is not configured to run at boot. No linger setting was changed.
+TOUCH
 
-POWER (all four external sockets together)
-  ~/touchly/power status
-  ~/touchly/power cycle
-  ~/touchly/power off
-  ~/touchly/power on
-These commands use sudo and may request your Pi login password.
-The fixed hub selector is 1-1, port 2, for the onboard hub on this Pi.
-External USB devices will all disconnect, including the attached USB audio
-device. Stop touch repetition before power cycling, then restart after the
-YubiKey reconnects. Do not power off mounted USB storage.
+Run these commands from the project directory:
 
-NETWORK
-At setup time wlan0 held <pi-address> and eth0 was down.
-Plug in Ethernet, discover its assigned address, then test SSH through that
-address. Actual Ethernet continuity during USB switching is untested on this
-unit. The Pi 3B+ has different hub wiring from the Pi 3B.
-https://github.com/mvp/uhubctl#raspberry-pi-3b
+  ./touch.py touch       # Trigger one touch, then release the pin
+  ./touch.py repeat      # Repeat touches for up to 25 seconds
+  ./touch.py release     # Set the pin to high-impedance input
+  ./touch.py --help      # Show available commands and options
 
-VALIDATION
-GPIO tests used gpiozero's mock pin factory only. Power control was inspected
-without changing power state. A YubiKey was not attached during setup.
+The default touch sweep lasts 1.70 seconds, with a 0.45-second release
+between sweeps in repeat mode. Use --hold and --interval to adjust the
+timing, and --max-duration to set the repeat deadline. Press Ctrl+C to
+stop repeat mode early.
+
+touch.py uses RPi.GPIO. It can build its native GPIO helper with GCC.
+The USB capture script can report when a FIDO request's user-presence
+check has been satisfied so repeat mode can stop early.
+
+USB POWER (RASPBERRY PI 3B+)
+
+  ./power status
+  ./power cycle
+  ./power off
+  ./power on
+
+The power script uses sudo and uhubctl to switch all four external USB
+sockets together. The on and cycle commands try to release GPIO21 before
+restoring power so the YubiKey can establish an untouched baseline.
+Stop touch repetition before cycling power, and unmount USB storage
+before switching it off.
+
+USB CAPTURE AND FORWARDING
+
+Use ./pi_usbmon_capture.py --help for USB capture options, including
+CSV output and optional PCAP output. See VIRTUALHERE.txt for the
+separate VirtualHere USB forwarding setup.
