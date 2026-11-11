@@ -1,0 +1,19 @@
+#!/bin/sh
+# The Pi 3B+ switches the four external USB sockets as one group.
+# Ensure GPIO21 is in High-Z input (PUD_OFF) before powering on/cycling so
+# the YubiKey capacitive touch sensor calibrates an untouched baseline.
+set -eu
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+case "${1:-}" in
+    status) exec sudo /usr/sbin/uhubctl -l 1-1 ;;
+    off) exec sudo /usr/sbin/uhubctl -l 1-1 -p 2 -a off ;;
+    on)
+        "$DIR/touch.py" release || true
+        exec sudo /usr/sbin/uhubctl -l 1-1 -p 2 -a on
+        ;;
+    cycle)
+        "$DIR/touch.py" release || true
+        exec sudo /usr/sbin/uhubctl -l 1-1 -p 2 -a cycle -d 2
+        ;;
+    *) echo "Usage: $0 {status|on|off|cycle}" >&2; exit 2 ;;
+esac

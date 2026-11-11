@@ -1,0 +1,39 @@
+VirtualHere server installed on Pi 3B+, 2026-11-05
+
+Server: <pi-address>:7575 (YubiKey Pi)
+Software: generic ARM64 VirtualHere v4.8.8, official checksum verified.
+Service: virtualhere.service, enabled at boot and running.
+Config: /usr/local/etc/virtualhere/config.ini
+Binary: /usr/local/sbin/vhusbdarm64
+Only Yubico USB vendor 1050 is allowed. One device can be shared by the
+generic unlicensed server. No paid licence was purchased.
+
+On the computer which will use the YubiKey:
+1. Install the appropriate VirtualHere USB Client:
+   https://www.virtualhere.com/usb_client_software
+2. Plug the YubiKey into a USB socket on the Pi.
+3. If YubiKey Pi is not discovered automatically, use USB Hubs -> Specify
+   Hubs -> Add and enter <pi-address>:7575.
+4. Right-click the YubiKey and select Use this device.
+5. Optionally select Auto-Use Device so the client reconnects after a USB
+   power cycle. Actual reconnection and authentication need testing.
+
+The Pi-side GPIO touch script operates separately from USB forwarding.
+No original YubiPi OTP server is running or grabbing the USB keyboard.
+Only one client can use a device at a time.
+
+Service commands:
+  sudo systemctl status virtualhere
+  sudo systemctl restart virtualhere
+  sudo systemctl stop virtualhere
+  sudo journalctl -u virtualhere -n 50
+
+The server uses default network binding. NetworkInterface was removed because
+it is a paid advanced option and caused a trial-expired error. If Ethernet
+or DHCP gives the Pi a different address, use that address in the client.
+VirtualHere must be stopped before editing config.
+No router forwarding, public access, or SSL/client authorization was set up.
+
+Verified: systemd unit, service enabled/running, TCP connection from setup
+computer. Pending: YubiKey detection, remote USB use, real touch, and power
+cycle reconnection. No YubiKey was attached during installation.
