@@ -14,6 +14,70 @@ During a touch, touch.py drives the pin with a frequency sweep. Between
 touches, it leaves the pin as a high-impedance input with its internal
 pull resistors disabled.
 
+FRESH SETUP (RASPBERRY PI 3B+, RASPBERRY PI OS TRIXIE)
+
+On the Pi, install Python, RPi.GPIO, and the compiler and headers for
+the native GPIO helper. Git is used to clone the project, and usbutils
+provides lsusb for finding the YubiKey.
+
+  sudo apt update
+  sudo apt install git python3 python3-rpi.gpio gcc libc6-dev usbutils
+  git clone https://github.com/ve7jtb/touchly.git
+  cd touchly
+
+If you also want to use the USB power script, install uhubctl:
+
+  sudo apt install uhubctl
+
+Run touch.py as your normal user. If it cannot access /dev/gpiomem,
+check that your account is in the gpio group. If you need to add it,
+run the following as your normal login user, then log out and back in:
+
+  sudo usermod -aG gpio "$USER"
+
+VERIFY AUTOMATIC TOUCH
+
+1. Plug in the YubiKey and connect the GPIO wire as described above.
+   Run lsusb on the Pi and note the YubiKey's Bus and Device numbers.
+
+2. In one Pi terminal, start the touch daemon from the project directory:
+
+     ./touch.py daemon
+
+   Wait for READY with backend=native_c. If it reports
+   backend=python_gpio, check the warning for a compiler or GPIO access
+   problem before testing the native sweep.
+
+3. In a second Pi terminal, start the monitor on the YubiKey's USB bus.
+   These commands assume Bus 001. Change --bus to match lsusb.
+
+     sudo modprobe usbmon
+     sudo ./pi_usbmon_capture.py --bus 1
+
+   If the YubiKey's Device number is below 5, add --min-devnum with
+   that number. For example, use --min-devnum 4 for Device 004.
+
+4. Have a FIDO operation ready on the computer that can access the
+   YubiKey. For example, use a sign-in that already has this key
+   registered. In the daemon terminal, enter:
+
+     ARM setup-check
+
+   Within 30 seconds, start the operation that normally requires a
+   touch. Keep your hands off the YubiKey. If the operation succeeds
+   and the daemon reports DONE setup-check with passes=1 or higher,
+   automatic touch worked. A reason such as up_satisfied or
+   transaction_finished shows how the daemon ended the session.
+
+   If DONE reports timeout with passes=0, check the USB bus, the
+   device-number cutoff, and whether the operation actually requested
+   a touch. If passes is greater than zero but the prompt remains,
+   check the wire and copper tape contact. The pass count shows that
+   a sweep was attempted.
+
+5. Enter QUIT in the daemon terminal and press Ctrl+C in the monitor
+   terminal when finished.
+
 TOUCH
 
 Run these commands from the project directory:
